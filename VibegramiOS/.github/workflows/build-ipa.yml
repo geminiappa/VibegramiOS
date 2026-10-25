@@ -1,152 +1,122 @@
-
-name: Build Vibegram IPA
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    name: Build unsigned iOS IPA
-    runs-on: macos-15
-    timeout-minutes: 45
-
-    steps:
-      - name: Download repository
-        uses: actions/checkout@v7
-
-      - name: Check Apple tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          swift --version
-
-      - name: Find Vibegram Xcode project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PROJECT_PATH="$(find "$GITHUB_WORKSPACE" \
-            -maxdepth 5 \
-            -type d \
-            -name "Vibegram.xcodeproj" \
-            -print -quit)"
-
           if [[ -z "$PROJECT_PATH" ]]; then
-            echo "::error::Vibegram.xcodeproj was not found."
-            echo "Files in repository:"
+            echo '::error::Vibegram.xcodeproj not found. Make sure its folder is in the repository root.'
             find "$GITHUB_WORKSPACE" -maxdepth 4 -print
             exit 1
           fi
-
           SCHEME_FILE="$PROJECT_PATH/xcshareddata/xcschemes/Vibegram.xcscheme"
-
           if [[ ! -f "$SCHEME_FILE" ]]; then
-            echo "::error::Shared Vibegram scheme was not found."
+            echo '::error::Shared scheme Vibegram.xcscheme not found.'
             xcodebuild -list -project "$PROJECT_PATH" || true
             exit 1
           fi
-
           echo "PROJECT_PATH=$PROJECT_PATH" >> "$GITHUB_ENV"
-          echo "Found project: $PROJECT_PATH"
+          echo "Found: $PROJECT_PATH"
 
-      - name: Resolve Swift packages
+      - name: Resolve package dependencies
         shell: bash
         run: |
           set -euo pipefail
-
-          xcodebuild \
-            -resolvePackageDependencies \
+          xcodebuild -resolvePackageDependencies \
             -project "$PROJECT_PATH" \
             -scheme Vibegram
 
-      - name: Build Vibegram for iPhone
+      - name: Build device app for arm64
         shell: bash
         run: |
           set -o pipefail
-
           xcodebuild \
             -project "$PROJECT_PATH" \
             -scheme Vibegram \
             -configuration Release \
+            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/VibegramBuild" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY='' \
             clean build
 
-      - name: Validate application
+      - name: Validate app bundle and architecture
         shell: bash
         run: |
           set -euo pipefail
-
           PRODUCTS="$RUNNER_TEMP/VibegramBuild/Build/Products/Release-iphoneos"
           APP_PATH="$PRODUCTS/Vibegram.app"
-
           if [[ ! -d "$APP_PATH" ]]; then
-            APP_PATH="$(find "$PRODUCTS" \
-              -maxdepth 1 \
-              -type d \
-              -name '*.app' \
-              -print -quit || true)"
+            APP_PATH="$(find "$PRODUCTS" -maxdepth 1 -type d -name '*.app' -print -quit || true)"
           fi
-
           if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-            echo "::error::Build succeeded but the .app bundle was not found."
-            find "$RUNNER_TEMP/VibegramBuild/Build/Products" \
-              -maxdepth 4 -print || true
+            echo '::error::No .app bundle was produced by xcodebuild.'
+            find "$RUNNER_TEMP/VibegramBuild/Build/Products" -maxdepth 4 -print || true
             exit 1
           fi
 
-          if [[ ! -f "$APP_PATH/Info.plist" ]]; then
-            echo "::error::Info.plist is missing."
+          INFO="$APP_PATH/Info.plist"
+          if [[ ! -f "$INFO" ]]; then
+            echo '::error::Info.plist missing from app bundle.'
+            exit 1
+          fi
+          plutil -lint "$INFO"
+
+          EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")"
+          EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE_NAME"
+
+          if [[ -z "$EXECUTABLE_NAME" || ! -f "$EXECUTABLE_PATH" ]]; then
+            echo "::error::CFBundleExecutable is missing or does not exist: $EXECUTABLE_NAME"
+            exit 1
+          fi
+          if [[ -z "$BUNDLE_ID" ]]; then
+            echo '::error::CFBundleIdentifier is empty.'
             exit 1
           fi
 
-          plutil -lint "$APP_PATH/Info.plist"
+          chmod +x "$EXECUTABLE_PATH"
+          if ! /usr/bin/lipo -verify_arch arm64 "$EXECUTABLE_PATH"; then
+            echo '::error::Main executable does not contain the iOS arm64 architecture.'
+            /usr/bin/file "$EXECUTABLE_PATH" || true
+            exit 1
+          fi
 
+          echo "App bundle: $APP_PATH"
+          echo "Bundle ID: $BUNDLE_ID"
+          echo "Executable: $EXECUTABLE_NAME"
+          /usr/bin/file "$EXECUTABLE_PATH"
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
-          echo "Application validated: $APP_PATH"
 
-      - name: Package unsigned IPA
+      - name: Package standard IPA (Payload/Vibegram.app)
         shell: bash
         run: |
           set -euo pipefail
+          IPA_ROOT="$RUNNER_TEMP/VibegramIPA"
+          rm -rf "$IPA_ROOT"
+          mkdir -p "$IPA_ROOT/Payload"
+          /usr/bin/ditto "$APP_PATH" "$IPA_ROOT/Payload/$(basename "$APP_PATH")"
 
-          IPA_DIR="$RUNNER_TEMP/VibegramIPA"
-          rm -rf "$IPA_DIR"
-          mkdir -p "$IPA_DIR/Payload"
+          IPA_PATH="$GITHUB_WORKSPACE/Vibegram-unsigned.ipa"
+          rm -f "$IPA_PATH"
+          (cd "$IPA_ROOT" && /usr/bin/zip -qry -y "$IPA_PATH" Payload)
+          test -s "$IPA_PATH"
+          /usr/bin/unzip -t "$IPA_PATH"
 
-          APP_NAME="$(basename "$APP_PATH")"
-          ditto "$APP_PATH" "$IPA_DIR/Payload/$APP_NAME"
-
-          (
-            cd "$IPA_DIR"
-            /usr/bin/zip -qry \
-              "$GITHUB_WORKSPACE/Vibegram-unsigned.ipa" \
-              Payload
-          )
-
-          if [[ ! -s "$GITHUB_WORKSPACE/Vibegram-unsigned.ipa" ]]; then
-            echo "::error::IPA file was not created."
+          ENTRIES="$(/usr/bin/unzip -Z1 "$IPA_PATH")"
+          if ! grep -Fxq 'Payload/Vibegram.app/Info.plist' <<< "$ENTRIES"; then
+            echo '::error::IPA does not contain Payload/Vibegram.app/Info.plist at the expected path.'
+            printf '%s\n' "$ENTRIES" | head -100
+            exit 1
+          fi
+          if ! grep -Eq '^Payload/[^/]+\.app/[^/]+$' <<< "$ENTRIES"; then
+            echo '::error::IPA is missing the app executable at the expected bundle level.'
             exit 1
           fi
 
-          echo "IPA created successfully."
-          ls -lh "$GITHUB_WORKSPACE/Vibegram-unsigned.ipa"
-          /usr/bin/unzip -l \
-            "$GITHUB_WORKSPACE/Vibegram-unsigned.ipa"
+          echo 'IPA archive structure validated. This IPA is unsigned and must be signed by a sideloading tool.'
+          ls -lh "$IPA_PATH"
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: Vibegram-unsigned-IPA
           path: Vibegram-unsigned.ipa

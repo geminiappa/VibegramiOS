@@ -1,19 +1,12 @@
-# Собрать IPA для Sideloadly без Mac
+# Сборка Vibegram IPA через GitHub Actions
 
-В этой среде нет macOS/Xcode, поэтому настоящий iOS-бинарник нельзя скомпилировать прямо здесь. Workflow в `.github/workflows/build-ipa.yml` соберёт проект на macOS runner GitHub Actions и приложит unsigned IPA как скачиваемый artifact.
+1. Загрузите **содержимое** папки `VibegramiOS` в корень GitHub-репозитория (так, чтобы `Vibegram.xcodeproj` находился в корне).
+2. Убедитесь, что загружен файл `.github/workflows/build-ipa.yml`. В браузерном интерфейсе GitHub создайте его по пути `.github/workflows/build-ipa.yml`, если скрытая папка не была загружена.
+3. Откройте **Actions → Build Vibegram IPA → Run workflow**. Автоматически также запускается при push изменений Swift/Xcode в ветку `main` или `master`.
+4. Когда workflow завершится зелёным, откройте конкретный запуск и скачайте артефакт `Vibegram-unsigned-IPA` внизу страницы.
+5. Распакуйте ZIP с артефактом, чтобы получить `Vibegram-unsigned.ipa`.
+6. Импортируйте неподписанный IPA в инструмент sideloading, который вы выбрали, и подпишите его собственным Apple ID / сертификатом.
 
-## Как получить IPA с Windows
+Workflow ищет `Vibegram.xcodeproj` в репозитории, проверяет shared scheme `Vibegram`, собирает Release для generic iOS device, проверяет `Info.plist` и формирует ZIP-структуру `Payload/Vibegram.app`.
 
-1. Создай отдельный репозиторий GitHub, например `VibegramiOS`.
-2. Распакуй этот архив и загрузи **все файлы и папки из корня проекта**, включая скрытую папку `.github`, в корень репозитория. Не загружай только ZIP-файл.
-3. Сделай commit/push в ветку `main` (или `master`). Workflow автоматически запустится. Либо открой вкладку **Actions → Build Vibegram IPA → Run workflow**.
-4. Открой завершённый запуск, найди **Artifacts** и скачай `Vibegram-unsigned-IPA`. Это ZIP с файлом `Vibegram-unsigned.ipa` внутри.
-5. Распакуй скачанный artifact, открой Sideloadly на Windows, подключи iPhone по USB и перетащи `Vibegram-unsigned.ipa` в Sideloadly. Введи Apple ID непосредственно в Sideloadly и начни установку.
-
-## Важное
-
-- IPA будет **unsigned**; Sideloadly подпишет его для твоего устройства. iOS не запускает неподписанные приложения напрямую.
-- Не передавай Apple ID, пароль или коды подтверждения мне и не сохраняй их в GitHub Actions secrets. Вводи Apple ID только в официальное приложение Sideloadly.
-- Бесплатная подпись Apple ID обычно требует повторной установки/обновления подписи периодически (часто через 7 дней). См. официальные сведения Sideloadly.
-- В проекте используется Bundle ID `com.vibegram.messenger`; если он уже занят или Sideloadly попросит изменить его, используй уникальный Bundle ID.
-- Никакая GitHub-сборка не запускается сама, пока ты не загрузишь проект в свой репозиторий. Содержимое сайта продолжит загружаться с `https://vibegramm.onrender.com`.
+**Примечание:** CI создаёт неподписанный IPA, а не App Store-сборку. На iPhone требуется действительная подпись. Успешность компиляции нужно подтверждать по результату Actions: среда разработки вне macOS не содержит Xcode и не может выполнить финальную сборку локально.
